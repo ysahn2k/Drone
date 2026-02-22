@@ -43,6 +43,7 @@ static const uint8_t BMP180_PRESS_CMD_OSS0 = 0x34;
 // BMP180 calibration data
 int16_t ac1, ac2, ac3, b1, b2, mb, mc, md;
 uint16_t ac4, ac5, ac6;
+bool bmp180CalibOk = false;
 
 // ------------------------------------------------------------
 // I2C helpers
@@ -173,13 +174,17 @@ bool bmp180ReadUP(int32_t& up) {
 }
 
 bool readBMP180(float& temp_c, float& pressure_pa) {
+  if (!bmp180CalibOk) return false;
+
   int32_t ut, up;
   if (!bmp180ReadUT(ut)) return false;
   if (!bmp180ReadUP(up)) return false;
 
   // Bosch datasheet compensation (integer)
   int32_t x1 = ((ut - (int32_t)ac6) * (int32_t)ac5) >> 15;
-  int32_t x2 = ((int32_t)mc << 11) / (x1 + md);
+  int32_t denom = x1 + md;
+  if (denom == 0) return false;
+  int32_t x2 = ((int32_t)mc << 11) / denom;
   int32_t b5 = x1 + x2;
   int32_t t = (b5 + 8) >> 4;
   temp_c = t / 10.0f;
@@ -194,6 +199,7 @@ bool readBMP180(float& temp_c, float& pressure_pa) {
   x2 = (b1 * ((b6 * b6) >> 12)) >> 16;
   x3 = ((x1 + x2) + 2) >> 2;
   uint32_t b4 = (ac4 * (uint32_t)(x3 + 32768)) >> 15;
+  if (b4 == 0) return false;
   uint32_t b7 = ((uint32_t)up - b3) * 50000;
 
   int32_t p;
@@ -218,12 +224,12 @@ void setup() {
 
   bool okIMU = initMPU6050();
   bool okMAG = initHMC5883L();
-  bool okBAR = readBMP180Calib();
+  bmp180CalibOk = readBMP180Calib();
 
   Serial.println("=== GY-87 init ===");
   Serial.printf("MPU6050: %s\n", okIMU ? "OK" : "FAIL");
   Serial.printf("HMC5883L: %s\n", okMAG ? "OK" : "FAIL");
-  Serial.printf("BMP180: %s\n", okBAR ? "OK" : "FAIL");
+  Serial.printf("BMP180: %s\n", bmp180CalibOk ? "OK" : "FAIL");
 }
 
 void loop() {
@@ -233,7 +239,13 @@ void loop() {
 
   bool imu = readMPU6050(ax, ay, az, gx, gy, gz);
   bool mag = readHMC5883L(mx, my, mz);
-  bool bar = readBMP180(t, p);
+  bool bar = false;
+  if (!bmp180CalibOk) {
+    bmp180CalibOk = readBMP180Calib();
+  }
+  if (bmp180CalibOk) {
+    bar = readBMP180(t, p);
+  }
 
   if (imu) {
     Serial.printf("IMU  ACC[g] %.3f %.3f %.3f | GYRO[dps] %.3f %.3f %.3f\n", ax, ay, az, gx, gy, gz);
@@ -249,6 +261,8 @@ void loop() {
 
   if (bar) {
     Serial.printf("BAR  Temp[°C] %.2f | Pressure[Pa] %.1f\n", t, p);
+  } else if (!bmp180CalibOk) {
+    Serial.println("BAR calibration missing (retrying)");
   } else {
     Serial.println("BAR read fail");
   }
